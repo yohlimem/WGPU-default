@@ -2,9 +2,7 @@
 use wasm_bindgen::prelude::*;
 use wgpu::{util::DeviceExt, QuerySet, RenderPassTimestampWrites};
 use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    dpi::{PhysicalSize, Size}, event::*, event_loop::{ControlFlow, EventLoop}, window::{Window, WindowBuilder}
 };
 
 mod texture;
@@ -35,48 +33,35 @@ impl Vertex {
 // the texture goes from zero at the top to 1 at the bottom
 // so we need to flip the y axis by doing 1 - y
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 1. - 0.99240386], }, // A
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 1. - 0.56958647], }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 1. - 0.05060294], }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 1. - 0.1526709], }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 1. - 0.7347359], }, // E
+    Vertex { position: [-1.0, 1.0, 0.0], tex_coords: [0.0, 0.0], }, // A
+    Vertex { position: [-1.0, -1.0, 0.0], tex_coords: [0.0, 1.0], }, // B
+    Vertex { position: [1.0,-1.0, 0.0], tex_coords: [1.0,1.0], }, // D
+    Vertex { position: [1.0, 1.0, 0.0], tex_coords: [1.0,0.0], }, // C
 ];
 const INDICES: &[u16] = &[
-    0, 1, 4,
-    1, 2, 4,
-    2, 3, 4,
+    0,1,2,
+    2,3,0,
+    
+    
+    
 ];
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
-);
 
-
-struct Camera {
-    eye: cgmath::Point3<f32>,
-    target: cgmath::Point3<f32>,
-    up: cgmath::Vector3<f32>,
-    aspect: f32,
-    fovy: f32,
-    znear: f32,
-    zfar: f32,
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Timer {
+    time: f32,
 }
 
-impl Camera {
-    fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
-        // 1.
-        let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
-        // 2.
-        let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
-
-        // 3.
-        return OPENGL_TO_WGPU_MATRIX * proj * view;
+impl Timer {
+    fn new() -> Self {
+        Self { time: 0.0 }
     }
-}
 
+    fn tick(&mut self, delta_time: f32) {
+        self.time += delta_time;
+    }
+
+}
 
 
 
@@ -91,7 +76,7 @@ pub async fn run() {
         }
     }
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let window = WindowBuilder::new().with_inner_size(PhysicalSize::new(1920,1080)).build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -186,11 +171,13 @@ struct State {
     index_buffer: wgpu::Buffer,
     diffuse_bind_group: wgpu::BindGroup,
 
+    timer_buffer: wgpu::Buffer,
+    timer_bind_group: wgpu::BindGroup,
+    timer: Timer,
+
 
     num_vertices: u32,
     num_indices: u32,
-
-    camera: Camera,
 
 
 
@@ -316,7 +303,7 @@ impl State {
                 label: Some("texture_bind_group_layout"),
         });
 
-        
+        // create texture
         surface.configure(&device, &config);
         let diffuse_bytes = include_bytes!("../happy-tree.png"); // CHANGED!
         let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap(); // CHANGED!
@@ -338,19 +325,46 @@ impl State {
             }
         );
 
-        let camera = Camera {
-            // position the camera 1 unit up and 2 units back
-            // +z is out of the screen
-            eye: (0.0, 1.0, 2.0).into(),
-            // have it look at the origin
-            target: (0.0, 0.0, 0.0).into(),
-            // which way is "up"
-            up: cgmath::Vector3::unit_y(),
-            aspect: config.width as f32 / config.height as f32,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-        };
+
+        // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#the-uniform-buffer
+        let timer = Timer::new();
+
+        let timer_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Timer Buffer"),
+                contents: bytemuck::cast_slice(&[timer]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+        let timer_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            ],
+            label: Some("timer_bind_group_layout"),
+        });
+
+        let timer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &timer_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: timer_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("timer_bind_group"),
+        });
+
+
+
 
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl")); 
@@ -358,7 +372,10 @@ impl State {
         let render_pipeline_layout = device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout], // NEW!
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &timer_bind_group_layout                  
+                ],
                 push_constant_ranges: &[],
             }
         );
@@ -405,6 +422,9 @@ impl State {
 
         
 
+
+        
+
         Self {
             window,
             surface,
@@ -418,7 +438,9 @@ impl State {
             index_buffer,
             num_indices,
             diffuse_bind_group,
-            camera,
+            timer_bind_group,
+            timer_buffer,
+            timer,
         }
     }
 
@@ -438,8 +460,13 @@ impl State {
     fn input(&mut self, event: &WindowEvent) -> bool {
         false
     }
-
+    
     fn update(&mut self) {
+        // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#a-controller-for-our-camera
+        // last code piece
+        self.timer.tick(0.001);
+
+        self.queue.write_buffer(&self.timer_buffer, 0, bytemuck::cast_slice(&[self.timer.time]))
         // log::info!("buffer: {:?}", self.render_pipeline)
     }
 
@@ -474,8 +501,12 @@ impl State {
                 timestamp_writes: wgpu::RenderPassDescriptor::default().timestamp_writes,
                 occlusion_query_set: wgpu::RenderPassDescriptor::default().occlusion_query_set,
             });
+            println!("timer: {}", self.timer.time);
             render_pass.set_pipeline(&self.render_pipeline);
+            
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.timer_bind_group, &[]);
+
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16); // 1.
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1); // 2.
