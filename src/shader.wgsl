@@ -1,5 +1,6 @@
-struct Timer{
-    time: f32,
+struct Camera{
+    offset: vec2<f32>,
+    zoom: f32,
 }
 
 struct VertexInput {
@@ -50,6 +51,7 @@ fn perlinNoise2(P: vec2<f32>) -> f32 {
 }
 
 
+
 @vertex
 fn vs_main(
     model: VertexInput,
@@ -72,16 +74,18 @@ var s_diffuse: sampler;
 
 // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#using-the-uniform-in-the-vertex-shader
 @group(1) @binding(0)
-var<uniform> timer: Timer;
+var<uniform> camera: Camera;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_coords: vec2<f32> = in.tex_coords;
-    var sample = textureSample(t_diffuse, s_diffuse, tex_coords);
-    let luma_formula = 0.2126 * sample.r + 0.7152 * sample.g + 0.0722 * sample.b;
-    let color = perlinNoise2(vec2<f32>(vec2<f32>(tex_coords.x + cos(timer.time * 5.0), tex_coords.y + sin(timer.time)) * 15.0));
-    sample.r = color;
-    sample.g = color;
-    sample.b = color;
-    return sample;
+    let color = perlinNoise2(vec2<f32>(tex_coords + camera.offset) * camera.zoom);
+
+    let blue = vec4<f32>(50.0 / 255.0, 124.0 / 255.0, 174.0 / 255.0, 1.0);
+    let green = vec4<f32>(0.0, 204.0/255.0, 0.0, 1.0);
+
+    
+    let result = mix(blue, green, color);
+
+    return result;
 }

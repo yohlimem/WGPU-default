@@ -48,18 +48,24 @@ const INDICES: &[u16] = &[
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Timer {
-    time: f32,
+struct Camera {
+    offset: [f32; 2],
+    zoom: f32,
+    _padding: f32,
 }
 
-impl Timer {
+impl Camera {
     fn new() -> Self {
-        Self { time: 0.0 }
+        Self {
+            offset: [0.0, 0.0],
+            zoom: 1.0,
+            _padding: 0.0,
+        }
     }
 
-    fn tick(&mut self, delta_time: f32) {
-        self.time += delta_time;
-    }
+    // fn tick(&mut self, delta_time: f32) {
+    //     self.time += delta_time;
+    // }
 
 }
 
@@ -171,9 +177,9 @@ struct State {
     index_buffer: wgpu::Buffer,
     diffuse_bind_group: wgpu::BindGroup,
 
-    timer_buffer: wgpu::Buffer,
-    timer_bind_group: wgpu::BindGroup,
-    timer: Timer,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    camera: Camera,
 
 
     num_vertices: u32,
@@ -327,16 +333,16 @@ impl State {
 
 
         // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#the-uniform-buffer
-        let timer = Timer::new();
+        let camera = Camera::new();
 
-        let timer_buffer = device.create_buffer_init(
+        let camera_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
-                label: Some("Timer Buffer"),
-                contents: bytemuck::cast_slice(&[timer]),
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             }
         );
-        let timer_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -349,18 +355,18 @@ impl State {
                     count: None,
                 }
             ],
-            label: Some("timer_bind_group_layout"),
+            label: Some("camera_bind_group_layout"),
         });
 
-        let timer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &timer_bind_group_layout,
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: timer_buffer.as_entire_binding(),
+                    resource: camera_buffer.as_entire_binding(),
                 }
             ],
-            label: Some("timer_bind_group"),
+            label: Some("camera_bind_group"),
         });
 
 
@@ -374,7 +380,7 @@ impl State {
                 label: Some("Render Pipeline Layout"),
                 bind_group_layouts: &[
                     &texture_bind_group_layout,
-                    &timer_bind_group_layout                  
+                    &camera_bind_group_layout                  
                 ],
                 push_constant_ranges: &[],
             }
@@ -438,9 +444,9 @@ impl State {
             index_buffer,
             num_indices,
             diffuse_bind_group,
-            timer_bind_group,
-            timer_buffer,
-            timer,
+            camera_bind_group,
+            camera_buffer,
+            camera,
         }
     }
 
@@ -458,16 +464,30 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+                            
+            WindowEvent::CursorMoved { position, .. } => {
+                self.camera.offset = [position.x as f32 / 500.0, position.y as f32 / 500.0];
+            
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                match delta {
+                    MouseScrollDelta::LineDelta(_x, y) => {
+                        self.camera.zoom -= y;
+                    }
+                    MouseScrollDelta::PixelDelta(_pos) => {}
+                }
+            }
+            _ => {}
+        }
+        // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#a-controller-for-our-camera
+        // last code piece
         false
     }
     
     fn update(&mut self) {
-        // https://sotrh.github.io/learn-wgpu/beginner/tutorial6-uniforms/#a-controller-for-our-camera
-        // last code piece
-        self.timer.tick(0.001);
-
-        self.queue.write_buffer(&self.timer_buffer, 0, bytemuck::cast_slice(&[self.timer.time]))
-        // log::info!("buffer: {:?}", self.render_pipeline)
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera]));
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -501,11 +521,11 @@ impl State {
                 timestamp_writes: wgpu::RenderPassDescriptor::default().timestamp_writes,
                 occlusion_query_set: wgpu::RenderPassDescriptor::default().occlusion_query_set,
             });
-            println!("timer: {}", self.timer.time);
+            // println!("timer: {}", self.camera.time);
             render_pass.set_pipeline(&self.render_pipeline);
             
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.timer_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16); // 1.
