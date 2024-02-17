@@ -9,7 +9,7 @@ mod texture;
 mod egui_components;
 
 use egui_components::gui::EguiRenderer;
-use egui_components::gui_example::GUI;
+use egui_components::gui_object::GUI;
 use egui_wgpu::renderer::ScreenDescriptor;
 
 

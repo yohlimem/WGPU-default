@@ -1,2 +1,2 @@
 pub mod gui;
-pub mod gui_example;
+pub mod gui_object;
