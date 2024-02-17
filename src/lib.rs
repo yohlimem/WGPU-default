@@ -1,13 +1,16 @@
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
-use wgpu::{util::DeviceExt, QuerySet, RenderPassTimestampWrites};
+use wgpu::{util::DeviceExt};
 use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    dpi::{LogicalSize, PhysicalSize}, event::*, event_loop::{ControlFlow, EventLoop}, keyboard::{Key, KeyCode, NamedKey, PhysicalKey}, window::{Window, WindowBuilder}
 };
 
 mod texture;
+mod egui_components;
+
+use egui_components::gui::EguiRenderer;
+use egui_components::gui_example::GUI;
+use egui_wgpu::renderer::ScreenDescriptor;
 
 
 #[repr(C)]
@@ -55,20 +58,17 @@ pub async fn run() {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-            console_log::init_with_level(log::Level::Debug).expect("Couldn't initialize logger");
+            console_log::init_with_level(log::Level::Warn).expect("Could't initialize logger");
         } else {
             env_logger::init();
         }
     }
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().with_inner_size(PhysicalSize::new(1920,1080)).build(&event_loop).unwrap();
+
+    let event_loop = EventLoop::new().unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {
-        log::info!("information highway");
-        log::warn!("warning!");
-        log::error!("error");
-
         // Winit prevents sizing with CSS, so we have to set
         // the size manually when on web.
         use winit::dpi::PhysicalSize;
@@ -78,8 +78,7 @@ pub async fn run() {
         web_sys::window()
             .and_then(|win| win.document())
             .and_then(|doc| {
-                // log::warn!("inserting canvas");
-                let dst = doc.body()?;
+                let dst = doc.get_element_by_id("wasm-example")?;
                 let canvas = web_sys::Element::from(window.canvas());
                 dst.append_child(&canvas).ok()?;
                 Some(())
@@ -87,56 +86,50 @@ pub async fn run() {
             .expect("Couldn't append canvas to document body.");
     }
 
+    // State::new uses async code, so we're going to wait for it to finish
     let mut state = State::new(window).await;
 
-    event_loop.run(move |event, _, control_flow| {
-        match event {
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == state.window().id() => {
-                if !state.input(event) {
-                    match event {
-                        WindowEvent::CloseRequested
-                        | WindowEvent::KeyboardInput {
-                            input:
-                                KeyboardInput {
-                                    state: ElementState::Pressed,
-                                    virtual_keycode: Some(VirtualKeyCode::Escape),
-                                    ..
-                                },
-                            ..
-                        } => *control_flow = ControlFlow::Exit,
-                        WindowEvent::Resized(physical_size) => {
-                            state.resize(*physical_size);
-                        }
-                        WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                            // new_inner_size is &&mut so we have to dereference it twice
-                            state.resize(**new_inner_size);
-                        }
-                        _ => {}
+    let _ = event_loop.run(move |event, ewlt| match event {
+        Event::WindowEvent {
+            ref event,
+            window_id,
+        } if window_id == state.window().id() => {
+            if !state.input(event) {
+                match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                logical_key: Key::Named(NamedKey::Escape),
+                                ..
+                            },
+                        ..
+                    } => ewlt.exit(),
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
                     }
-                }
+                    WindowEvent::RedrawRequested => {
+                        state.update();
+
+                        match state.render() {
+                            Ok(_) => {}
+                            // Reconfigure the surface if it's lost or outdated
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                state.resize(state.size)
+                            }
+                            // The system is out of memory, we should probably quit
+                            Err(wgpu::SurfaceError::OutOfMemory) => ewlt.exit(),
+                            // We're ignoring timeouts
+                            Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
+                        }
+                    }
+
+                    _ => {}
+                };
+                state.egui.handle_input(&mut state.window, &event);
             }
-            Event::RedrawRequested(window_id) if window_id == state.window().id() => {
-            state.update();
-            match state.render() {
-                Ok(_) => {}
-                // Reconfigure the surface if lost
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                // The system is out of memory, we should probably quit
-                Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                // All other errors (Outdated, Timeout) should be resolved by the next frame
-                Err(e) => eprintln!("{:?}", e),
-            }
-            }
-            Event::MainEventsCleared => {
-                // RedrawRequested will only trigger once unless we manually
-                // request it.
-                state.window().request_redraw();
-            }
-            _ => {}
         }
+        _ => {}
     });
 }
 
@@ -156,6 +149,7 @@ struct State {
     index_buffer: wgpu::Buffer,
     diffuse_bind_group: wgpu::BindGroup,
 
+    egui: EguiRenderer,
 
     num_vertices: u32,
     num_indices: u32,
@@ -356,7 +350,13 @@ impl State {
             multiview: None, // 5.
         });
 
-
+        let mut egui = EguiRenderer::new(
+            &device,       // wgpu Device
+            config.format, // TextureFormat
+            None,          // this can be None
+            1,             // samples
+            &window,       // winit Window
+        );
         
 
         Self {
@@ -372,6 +372,7 @@ impl State {
             index_buffer,
             num_indices,
             diffuse_bind_group,
+            egui,
         }
     }
 
@@ -389,6 +390,8 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
+        self.window().request_redraw();
+
         false
     }
 
@@ -398,8 +401,16 @@ impl State {
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            format: None,
+            dimension: None,
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: None,
+            base_array_layer: 0,
+            array_layer_count: None,
+        });        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
         {
@@ -424,15 +435,30 @@ impl State {
                     })
                 ],
                 depth_stencil_attachment: None,
-                timestamp_writes: wgpu::RenderPassDescriptor::default().timestamp_writes,
-                occlusion_query_set: wgpu::RenderPassDescriptor::default().occlusion_query_set,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]); // textures
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16); // 1.
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1); // 2.
         }
+
+        let screen_descriptor = ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: self.window().scale_factor() as f32,
+        };
+
+        self.egui.draw(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &self.window,
+            &view,
+            screen_descriptor,
+            |ui| GUI(ui),
+        );
 
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));

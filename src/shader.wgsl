@@ -26,6 +26,7 @@ fn vs_main(
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
+
 // https://sotrh.github.io/learn-wgpu/beginner/tutorial5-textures/#the-results
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
